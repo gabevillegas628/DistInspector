@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import {
@@ -575,8 +575,26 @@ export default function HistogramTool() {
   const [title, setTitle] = useState("Distribution");
   const [titleFocused, setTitleFocused] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [filterOutliers, setFilterOutliers] = useState(false);
+  const [filteredStats, setFilteredStats] = useState(null);
+  const [filteredAnalysis, setFilteredAnalysis] = useState(null);
   const chartRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!filterOutliers || !scores || !stats || stats.iqr === 0) {
+      setFilteredStats(null);
+      setFilteredAnalysis(null);
+      return;
+    }
+    const lo = stats.q1 - 1.5 * stats.iqr;
+    const hi = stats.q3 + 1.5 * stats.iqr;
+    const filtered = scores.filter(v => v >= lo && v <= hi);
+    if (filtered.length < 5) return;
+    const fs = computeStats(filtered);
+    setFilteredStats(fs);
+    setFilteredAnalysis(runLocalAnalysis(filtered, fs));
+  }, [filterOutliers, scores, stats]);
 
   const handleFile = useCallback((file) => {
     if (!file) return;
@@ -613,10 +631,19 @@ export default function HistogramTool() {
     setStats(s);
     setBinSize(result.suggestedBinWidth);
     setAnalysis(result);
+    setFilterOutliers(false);
+    setFilteredStats(null);
+    setFilteredAnalysis(null);
   }, [csvData]);
 
-  const bins = scores && stats ? computeBins(scores, binSize, stats) : [];
-  const maxBin = stats ? Math.max(5, Math.round((stats.max - stats.min) / 3)) : 20;
+  const lo = (stats && stats.iqr > 0) ? stats.q1 - 1.5 * stats.iqr : -Infinity;
+  const hi = (stats && stats.iqr > 0) ? stats.q3 + 1.5 * stats.iqr : Infinity;
+  const activeScores = (scores && filterOutliers) ? scores.filter(v => v >= lo && v <= hi) : scores;
+  const outlierCount = (scores && filterOutliers) ? scores.length - (activeScores?.length ?? 0) : 0;
+  const displayStats = (filterOutliers && filteredStats) ? filteredStats : stats;
+  const displayAnalysis = (filterOutliers && filteredAnalysis) ? filteredAnalysis : analysis;
+  const bins = activeScores && displayStats ? computeBins(activeScores, binSize, displayStats) : [];
+  const maxBin = displayStats ? Math.max(5, Math.round((displayStats.max - displayStats.min) / 3)) : 20;
 
   return (
     <div style={{ minHeight: "100vh", background: "#0a0f1e", color: "#e2e8f0", fontFamily: "'DM Sans', system-ui, sans-serif", padding: "28px 24px", boxSizing: "border-box" }}>
@@ -701,20 +728,20 @@ export default function HistogramTool() {
       {error && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 10 }}>{error}</div>}
 
       {/* Stat pills */}
-      {stats && (
+      {displayStats && (
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-          <StatPill label="n" value={stats.n} color="#818cf8" tip="Sample size — the total number of numeric values in the selected column." />
-          <StatPill label="mean" value={stats.mean.toFixed(1)} color="#38bdf8" tip="Arithmetic average. Sum of all values divided by n. Sensitive to outliers." />
-          <StatPill label="median" value={stats.median.toFixed(1)} color="#34d399" tip="Middle value when data is sorted. More robust than the mean when outliers are present." />
-          <StatPill label="SD" value={stats.std.toFixed(1)} color="#fbbf24" tip="Standard deviation — the typical distance of values from the mean. Larger = more spread out." />
-          <StatPill label="skew" value={stats.skew.toFixed(2)} color="#f472b6" tip="Skewness measures asymmetry. 0 = symmetric. Positive = long right tail (a few very high values). Negative = long left tail (a few very low values)." />
-          <StatPill label="min" value={stats.min} color="#64748b" tip="Smallest value in the dataset." />
-          <StatPill label="max" value={stats.max} color="#64748b" tip="Largest value in the dataset." />
-          {analysis && (
+          <StatPill label="n" value={displayStats.n} color="#818cf8" tip="Sample size — the total number of numeric values in the selected column." />
+          <StatPill label="mean" value={displayStats.mean.toFixed(1)} color="#38bdf8" tip="Arithmetic average. Sum of all values divided by n. Sensitive to outliers." />
+          <StatPill label="median" value={displayStats.median.toFixed(1)} color="#34d399" tip="Middle value when data is sorted. More robust than the mean when outliers are present." />
+          <StatPill label="SD" value={displayStats.std.toFixed(1)} color="#fbbf24" tip="Standard deviation — the typical distance of values from the mean. Larger = more spread out." />
+          <StatPill label="skew" value={displayStats.skew.toFixed(2)} color="#f472b6" tip="Skewness measures asymmetry. 0 = symmetric. Positive = long right tail (a few very high values). Negative = long left tail (a few very low values)." />
+          <StatPill label="min" value={displayStats.min} color="#64748b" tip="Smallest value in the dataset." />
+          <StatPill label="max" value={displayStats.max} color="#64748b" tip="Largest value in the dataset." />
+          {displayAnalysis && (
             <StatPill
               label="modality"
-              value={analysis.modality}
-              color={MODALITY_COLOR[analysis.modality] || "#94a3b8"}
+              value={displayAnalysis.modality}
+              color={MODALITY_COLOR[displayAnalysis.modality] || "#94a3b8"}
               tip="Number of peaks detected via kernel density estimation. Bimodal or multimodal distributions often indicate distinct subgroups in the data."
               small
             />
@@ -723,7 +750,7 @@ export default function HistogramTool() {
       )}
 
       {/* Chart + Analysis */}
-      {scores && stats && (
+      {scores && displayStats && (
         <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
           {/* Chart */}
           <div ref={chartRef} style={{ flex: "1 1 400px", background: "#0f172a", borderRadius: 10, padding: "16px 8px 8px", border: "1px solid #1e293b", minWidth: 0 }}>
@@ -732,11 +759,11 @@ export default function HistogramTool() {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                 <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#475569" }} interval="preserveStartEnd" />
                 <YAxis tick={{ fontSize: 12, fill: "#475569" }} label={{ value: "Count", angle: -90, position: "insideLeft", offset: 10, fontSize: 13, fill: "#475569" }} allowDecimals={false} />
-                <Tooltip content={<ChartTooltip n={stats.n} />} cursor={{ fill: "#1e293b" }} />
+                <Tooltip content={<ChartTooltip n={displayStats.n} />} cursor={{ fill: "#1e293b" }} />
                 <ReferenceLine
-                  x={String(parseFloat((Math.floor((stats.mean - Math.floor(stats.min / binSize) * binSize) / binSize) * binSize + Math.floor(stats.min / binSize) * binSize).toFixed(2)))}
+                  x={String(parseFloat((Math.floor((displayStats.mean - Math.floor(displayStats.min / binSize) * binSize) / binSize) * binSize + Math.floor(displayStats.min / binSize) * binSize).toFixed(2)))}
                   stroke="#38bdf8" strokeDasharray="4 3" strokeWidth={1.5}
-                  label={<MeanPillLabel value={`μ=${stats.mean.toFixed(1)}`} />}
+                  label={<MeanPillLabel value={`μ=${displayStats.mean.toFixed(1)}`} />}
                 />
                 <Bar dataKey="count" fill="#6366f1" fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                 <Line dataKey="curve" type="monotone" stroke="#fbbf24" strokeWidth={2} dot={false} />
@@ -750,20 +777,20 @@ export default function HistogramTool() {
           </div>
 
           {/* Analysis panel */}
-          {analysis && (
+          {displayAnalysis && (
             <div style={{ flex: "0 0 220px", background: "#0f172a", borderRadius: 10, padding: "18px", border: "1px solid #1e293b", display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
                 <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 5 }}>Modality</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: MODALITY_COLOR[analysis.modality] || "#e2e8f0", marginBottom: 5 }}>{analysis.modality}</div>
-                <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.6 }}>{analysis.modalityNote}</p>
+                <div style={{ fontSize: 14, fontWeight: 700, color: MODALITY_COLOR[displayAnalysis.modality] || "#e2e8f0", marginBottom: 5 }}>{displayAnalysis.modality}</div>
+                <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.6 }}>{displayAnalysis.modalityNote}</p>
               </div>
               <div style={{ borderTop: "1px solid #1e293b", paddingTop: 14 }}>
                 <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 5 }}>Shape</div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0" }}>{analysis.normalityAssessment}</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0" }}>{displayAnalysis.normalityAssessment}</div>
               </div>
               <div style={{ borderTop: "1px solid #1e293b", paddingTop: 14, flex: 1 }}>
                 <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 5 }}>Interpretation</div>
-                <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.7 }}>{analysis.interpretation}</p>
+                <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.7 }}>{displayAnalysis.interpretation}</p>
               </div>
             </div>
           )}
@@ -771,16 +798,35 @@ export default function HistogramTool() {
       )}
 
       {/* Controls bar */}
-      {scores && stats && (
+      {scores && displayStats && (
         <div style={{ display: "flex", alignItems: "center", gap: 16, background: "#0f172a", borderRadius: 8, padding: "12px 18px", border: "1px solid #1e293b", flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, color: "#475569", whiteSpace: "nowrap" }}>Bin width</span>
           <input type="range" min={0.5} max={maxBin} step={0.5} value={binSize} onChange={e => setBinSize(parseFloat(e.target.value))} style={{ flex: 1, minWidth: 80, accentColor: "#6366f1" }} />
           <span style={{ fontSize: 13, fontFamily: "'DM Mono', monospace", color: "#818cf8", minWidth: 28 }}>{binSize}</span>
           <button
-            onClick={() => setBinSize(stats.fdBin)}
+            onClick={() => setBinSize(displayStats.fdBin)}
             style={{ fontSize: 11, background: "#1e293b", border: "1px solid #334155", borderRadius: 4, color: "#64748b", padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}
           >
             Auto
+          </button>
+          <div style={{ width: 1, height: 20, background: "#1e293b" }} />
+          <button
+            onClick={() => setFilterOutliers(f => !f)}
+            style={{
+              background: filterOutliers ? "#1e1030" : "#1e293b",
+              border: `1px solid ${filterOutliers ? "#a78bfa55" : "#334155"}`,
+              borderRadius: 6, color: filterOutliers ? "#a78bfa" : "#64748b",
+              fontFamily: "inherit", fontWeight: 500, fontSize: 12,
+              padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+              whiteSpace: "nowrap", transition: "all 0.15s",
+            }}
+          >
+            Filter outliers
+            {filterOutliers && outlierCount > 0 && (
+              <span style={{ fontSize: 10, background: "#a78bfa22", borderRadius: 10, padding: "1px 6px", color: "#a78bfa", fontFamily: "'DM Mono', monospace" }}>
+                -{outlierCount}
+              </span>
+            )}
           </button>
           <div style={{ width: 1, height: 20, background: "#1e293b" }} />
           <button
@@ -796,11 +842,11 @@ export default function HistogramTool() {
         open={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
         bins={bins}
-        stats={stats}
+        stats={displayStats}
         binSize={binSize}
         onExport={({ sizeId, statKeys, dark }) => {
           setExportModalOpen(false);
-          setTimeout(() => exportPNG({ titleText: title, sizeId, statKeys, stats, analysis, bins, binSize, dark }), 0);
+          setTimeout(() => exportPNG({ titleText: title, sizeId, statKeys, stats: displayStats, analysis: displayAnalysis, bins, binSize, dark }), 0);
         }}
       />
 
