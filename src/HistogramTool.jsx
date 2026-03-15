@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer
+  CartesianGrid, Tooltip, ResponsiveContainer, Customized
 } from "recharts";
 
 // ── CSV parsing ───────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ function computeBins(arr, binSize, stats) {
     const count = arr.filter(v => v >= s && v < s + binSize).length;
     const mid = s + binSize / 2;
     bins.push({
-      label: String(parseFloat(s.toFixed(2))),
+      label: String(parseFloat(mid.toFixed(2))),
       range: `${parseFloat(s.toFixed(2))}–${parseFloat((s + binSize).toFixed(2))}`,
       count,
       curve: parseFloat((normalPDF(mid) * arr.length * binSize).toFixed(3)),
@@ -231,17 +231,13 @@ const EXPORT_LIGHT = { bg: "#f8fafc", surface: "#ffffff", grid: "#e2e8f0", tick:
 
 // ── Off-screen chart renderer (fixed size, window-independent) ────────────────
 function OffscreenChart({ width, height, bins, stats, binSize, et }) {
-  const meanBinX = String(parseFloat(
-    (Math.floor((stats.mean - Math.floor(stats.min / binSize) * binSize) / binSize) * binSize
-      + Math.floor(stats.min / binSize) * binSize).toFixed(2)
-  ));
   return (
     <ComposedChart data={bins} width={width} height={height} margin={{ top: 28, right: 16, left: 0, bottom: 22 }}>
       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={et.grid} />
       <XAxis dataKey="label" tick={{ fontSize: 12, fill: et.tick }} interval="preserveStartEnd" />
       <YAxis tick={{ fontSize: 12, fill: et.tick }} label={{ value: "Count", angle: -90, position: "insideLeft", offset: 10, fontSize: 13, fill: et.tick }} allowDecimals={false} />
-      <ReferenceLine x={meanBinX} stroke="#38bdf8" strokeDasharray="4 3" strokeWidth={1.5}
-        label={<MeanPillLabel value={`μ=${stats.mean.toFixed(1)}`} pillBg={et.surface} />} />
+      <Customized component={MeanCustomLine} mean={stats.mean} binSize={binSize} dataMin={stats.min}
+        stroke="#38bdf8" label={`μ=${stats.mean.toFixed(1)}`} pillBg={et.surface} />
       <Bar dataKey="count" fill="#6366f1" fillOpacity={0.8} radius={[3, 3, 0, 0]} isAnimationActive={false} />
       <Line dataKey="curve" type="monotone" stroke="#fbbf24" strokeWidth={2} dot={false} isAnimationActive={false} />
     </ComposedChart>
@@ -369,16 +365,13 @@ async function exportPNG({ titleText, sizeId, statKeys, stats, analysis, bins, b
 
 // ── Modal chart preview (live data, correct aspect ratio) ─────────────────────
 function ModalChartPreview({ previewW, previewH, bins, stats, binSize, active, et }) {
-  const meanBinX = String(parseFloat(
-    (Math.floor((stats.mean - Math.floor(stats.min / binSize) * binSize) / binSize) * binSize
-      + Math.floor(stats.min / binSize) * binSize).toFixed(2)
-  ));
   return (
     <ComposedChart data={bins} width={previewW} height={previewH} margin={{ top: 6, right: 4, left: 4, bottom: 4 }}>
       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={et.grid} />
       <XAxis dataKey="label" hide />
       <YAxis hide allowDecimals={false} />
-      <ReferenceLine x={meanBinX} stroke="#38bdf8" strokeDasharray="3 2" strokeWidth={1} />
+      <Customized component={MeanCustomLine} mean={stats.mean} binSize={binSize} dataMin={stats.min}
+        stroke="#38bdf8" />
       <Bar dataKey="count" fill="#6366f1" fillOpacity={active ? 0.85 : 0.5} radius={[2, 2, 0, 0]} isAnimationActive={false} />
       <Line dataKey="curve" type="monotone" stroke="#fbbf24" strokeWidth={1.5} dot={false} isAnimationActive={false} />
     </ComposedChart>
@@ -526,19 +519,34 @@ function StatPill({ label, value, color, tip, small }) {
   );
 }
 
-// ── Mean reference line pill label ────────────────────────────────────────────
-function MeanPillLabel({ viewBox, value, pillBg }) {
-  if (!viewBox) return null;
-  const { x, y } = viewBox;
-  const pw = 68, ph = 20, px = x - pw / 2, py = y - ph - 6;
+// ── Mean reference line (exact pixel position via band-scale interpolation) ───
+function MeanCustomLine({ xAxisMap, offset, mean, binSize, dataMin, stroke, label, pillBg }) {
+  if (!xAxisMap?.[0]?.scale?.bandwidth) return null;
+  const scale = xAxisMap[0].scale;
+  const start = Math.floor(dataMin / binSize) * binSize;
+  const binStart = Math.floor((mean - start) / binSize) * binSize + start;
+  const binMid = binStart + binSize / 2;
+  const binLabel = String(parseFloat(binMid.toFixed(2)));
+  const binX = scale(binLabel);
+  if (binX === undefined) return null;
+  const xPixel = binX + ((mean - binStart) / binSize) * scale.bandwidth();
+  const y1 = offset.top;
+  const y2 = offset.top + offset.height;
+  const pw = 68, ph = 20, px = xPixel - pw / 2, py = y1 - ph - 6;
   return (
     <g>
-      <rect x={px} y={py} width={pw} height={ph} rx={5} ry={5}
-        fill={pillBg ?? "#0f172a"} stroke="#38bdf8" strokeWidth={1.2} />
-      <text x={x} y={py + ph / 2 + 4.5} textAnchor="middle"
-        fill="#38bdf8" fontSize={12} fontWeight={700} fontFamily="'DM Mono', monospace">
-        {value}
-      </text>
+      <line x1={xPixel} y1={y1} x2={xPixel} y2={y2}
+        stroke={stroke} strokeDasharray="4 3" strokeWidth={1.5} />
+      {label && (
+        <g>
+          <rect x={px} y={py} width={pw} height={ph} rx={5} ry={5}
+            fill={pillBg ?? "#0f172a"} stroke={stroke} strokeWidth={1.2} />
+          <text x={xPixel} y={py + ph / 2 + 4.5} textAnchor="middle"
+            fill={stroke} fontSize={12} fontWeight={700} fontFamily="'DM Mono', monospace">
+            {label}
+          </text>
+        </g>
+      )}
     </g>
   );
 }
@@ -760,11 +768,8 @@ export default function HistogramTool() {
                 <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#475569" }} interval="preserveStartEnd" />
                 <YAxis tick={{ fontSize: 12, fill: "#475569" }} label={{ value: "Count", angle: -90, position: "insideLeft", offset: 10, fontSize: 13, fill: "#475569" }} allowDecimals={false} />
                 <Tooltip content={<ChartTooltip n={displayStats.n} />} cursor={{ fill: "#1e293b" }} />
-                <ReferenceLine
-                  x={String(parseFloat((Math.floor((displayStats.mean - Math.floor(displayStats.min / binSize) * binSize) / binSize) * binSize + Math.floor(displayStats.min / binSize) * binSize).toFixed(2)))}
-                  stroke="#38bdf8" strokeDasharray="4 3" strokeWidth={1.5}
-                  label={<MeanPillLabel value={`μ=${displayStats.mean.toFixed(1)}`} />}
-                />
+                <Customized component={MeanCustomLine} mean={displayStats.mean} binSize={binSize}
+                  dataMin={displayStats.min} stroke="#38bdf8" label={`μ=${displayStats.mean.toFixed(1)}`} />
                 <Bar dataKey="count" fill="#6366f1" fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                 <Line dataKey="curve" type="monotone" stroke="#fbbf24" strokeWidth={2} dot={false} />
               </ComposedChart>
